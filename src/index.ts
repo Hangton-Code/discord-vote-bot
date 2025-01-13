@@ -6,7 +6,6 @@ import {
   ButtonBuilder,
   ButtonStyle,
   Client,
-  ComponentType,
   IntentsBitField,
 } from "discord.js";
 import { decryptText, encryptText } from "./encrypt";
@@ -20,11 +19,10 @@ const client = new Client({
   ],
 });
 
-client.on("guildCreate", async (c) => {
-  console.log(`🆕 VoteBot#${c.client.user.id} jumped into #${c.id}.`);
-
-  await registerSlashCommands(c.id);
-  console.log(`✅ Created slash command for server #${c.id}`);
+client.on("guildCreate", async (guild) => {
+  console.log(`🆕 VoteBot#${client.user?.id} joined #${guild.id}.`);
+  await registerSlashCommands(guild.id);
+  console.log(`✅ Created slash command for server #${guild.id}`);
 });
 
 client.on("ready", (c) => {
@@ -36,11 +34,9 @@ const confirmCreateButton = new ButtonBuilder()
   .setStyle(ButtonStyle.Primary)
   .setCustomId("confirm-create-vote-button");
 
-const createVoteButtonRow = new ActionRowBuilder().addComponents(
+const createVoteButtonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
   confirmCreateButton
 );
-
-// typo error for statistics and statics!!!
 
 type VOTEDATA = {
   eventName: string;
@@ -57,45 +53,33 @@ type DECRYPTED_STATICS = {
 
 const STATICS_PASSWORD = process.env.STATICS_PASSWORD as string;
 
-// to format options available into numbered list, with statics
 const toFormattedOptions = (options: string[], statics?: DECRYPTED_STATICS) => {
-  let formattedOptions = "";
-  for (let i = 0; i < options.length; i++) {
-    const option = options[i];
-    formattedOptions += `${i + 1}. ${option}${
-      !!statics ? `: got ${statics[i.toString()] || 0} votes` : ""
-    }\n`;
-  }
-  return formattedOptions;
+  return options
+    .map(
+      (option, index) =>
+        `${index + 1}. ${option}${
+          statics ? `: got ${statics[index.toString()] || 0} votes` : ""
+        }`
+    )
+    .join("\n");
 };
 
 client.on("interactionCreate", async (interaction) => {
   if (interaction.isChatInputCommand()) {
-    // request to create vote event
     if (interaction.commandName === "create-vote") {
-      const rawEventName = interaction.options.get("event-name");
-      const rawOptions = interaction.options.get("options");
-      if (!rawEventName || !rawOptions) {
-        interaction.reply("❌ You have to give me the field required ar!!");
-        return;
-      }
+      const eventName = interaction.options.getString("event-name");
+      const options = interaction.options.getString("options");
 
-      const rawStringOfOptions = rawOptions.value?.toString() || "";
-      if (
-        !rawStringOfOptions.includes(",") ||
-        rawStringOfOptions.includes("-")
-      ) {
-        interaction.reply(
-          "❌ You have to give me at least **TWO** options ar!!"
+      if (!eventName || !options || !options.includes(",")) {
+        await interaction.reply(
+          "❌ You must provide an event name and at least two options separated by commas!"
         );
         return;
       }
 
-      const eventName = rawEventName.value?.toString() || "Vote";
-
       const data: VOTEDATA = {
         eventName,
-        options: rawStringOfOptions.split(","),
+        options: options.split(","),
         userVoted: [],
         userWhoCreateIt: interaction.user.id,
         encryptedStatics: encryptText("{}", STATICS_PASSWORD),
@@ -103,43 +87,35 @@ client.on("interactionCreate", async (interaction) => {
       };
 
       await interaction.reply({
-        content: `hello! You are creating a new vote event called **${eventName}**; options are:
-${toFormattedOptions(data.options)}
-
-
-server usage (you may ignore it):
-${JSON.stringify(data)}`,
-        // @ts-ignore
+        content: `You are creating a new vote event called **${eventName}**; options are:\n${toFormattedOptions(
+          data.options
+        )}\n\nServer usage (you may ignore it):\n${JSON.stringify(data)}`,
         components: [createVoteButtonRow],
       });
     }
   }
 
   if (interaction.isButton()) {
-    // confirm to create the vote event
-    if (interaction.customId === "confirm-create-vote-button") {
-      const messageContent = interaction.message.content;
-      const lines = messageContent.split("\n");
-      let data = JSON.parse(lines[lines.length - 1]) as VOTEDATA;
+    const messageContent = interaction.message.content;
+    const lines = messageContent.split("\n");
+    const data = JSON.parse(lines[lines.length - 1]) as VOTEDATA;
 
+    if (interaction.customId === "confirm-create-vote-button") {
       if (interaction.user.id !== data.userWhoCreateIt) return;
 
-      let optionsButton: ButtonBuilder[] = [];
-      for (let i = 0; i < data.options.length; i++) {
-        optionsButton.push(
-          new ButtonBuilder()
-            .setLabel((i + 1).toString())
-            .setStyle(ButtonStyle.Primary)
-            .setCustomId(`vote-for-${i}`)
-        );
-      }
+      const optionsButton = data.options.map((_, index) =>
+        new ButtonBuilder()
+          .setLabel((index + 1).toString())
+          .setStyle(ButtonStyle.Primary)
+          .setCustomId(`vote-for-${index}`)
+      );
 
       const decryptButton = new ButtonBuilder()
         .setLabel("Decrypt (開票)")
         .setStyle(ButtonStyle.Danger)
         .setCustomId("decrypt-vote");
 
-      const voteButtonRow = new ActionRowBuilder().addComponents(
+      const voteButtonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
         ...optionsButton,
         decryptButton
       );
@@ -147,42 +123,33 @@ ${JSON.stringify(data)}`,
       await interaction.message.delete();
 
       await interaction.reply({
-        content: `**${data.eventName}**
-@everyone You all are welcome to vote; however, statistics are encrypted now!
-${toFormattedOptions(data.options)}
-${data.userVoted.length} voted!
-
-server usage (you may ignore it):
-${JSON.stringify(data)}`,
-        // @ts-ignore
+        content: `**${
+          data.eventName
+        }**\n@everyone You are welcome to vote! Statistics are encrypted.\n${toFormattedOptions(
+          data.options
+        )}\n${
+          data.userVoted.length
+        } voted!\n\nServer usage (you may ignore it):\n${JSON.stringify(data)}`,
         components: [voteButtonRow],
       });
     }
 
-    // user vote
-    if (interaction.customId.includes("vote-for-")) {
-      const messageContent = interaction.message.content;
-      const lines = messageContent.split("\n");
-      let data = JSON.parse(lines[lines.length - 1]) as VOTEDATA;
+    if (interaction.customId.startsWith("vote-for-")) {
       if (data.userVoted.includes(interaction.user.id)) {
         await interaction.reply(
-          `<@${interaction.user.id}> You have voted already!`
+          `<@${interaction.user.id}> You have already voted!`
         );
         return;
       }
 
       const voteFor = interaction.customId.replace("vote-for-", "");
-
-      let decryptedStatics = JSON.parse(
+      const decryptedStatics = JSON.parse(
         decryptText(data.encryptedStatics, STATICS_PASSWORD)
       ) as DECRYPTED_STATICS;
 
-      decryptedStatics = {
-        ...decryptedStatics,
-        [voteFor]: (decryptedStatics[voteFor] || 0) + 1,
-      };
+      decryptedStatics[voteFor] = (decryptedStatics[voteFor] || 0) + 1;
 
-      data = {
+      const updatedData: VOTEDATA = {
         ...data,
         userVoted: [...data.userVoted, interaction.user.id],
         encryptedStatics: encryptText(
@@ -191,49 +158,49 @@ ${JSON.stringify(data)}`,
         ),
       };
 
-      await interaction.message.edit(`**${data.eventName}**
-You all are welcome to vote; however, statistics are encrypted now!
-${toFormattedOptions(data.options)}
-${data.userVoted.length} voted!
-
-server usage (you may ignore it):
-${JSON.stringify(data)}`);
+      await interaction.message.edit({
+        content: `**${
+          updatedData.eventName
+        }**\nYou are welcome to vote! Statistics are encrypted.\n${toFormattedOptions(
+          updatedData.options
+        )}\n${
+          updatedData.userVoted.length
+        } voted!\n\nServer usage (you may ignore it):\n${JSON.stringify(
+          updatedData
+        )}`,
+      });
 
       await interaction.reply(
-        `<@${interaction.user.id}> You have successfully voted for event: **${data.eventName}**!`
+        `<@${interaction.user.id}> You have successfully voted for **${updatedData.eventName}**!`
       );
     }
 
-    // decrypt the vote event
     if (interaction.customId === "decrypt-vote") {
-      const messageContent = interaction.message.content;
-      const lines = messageContent.split("\n");
-      let data = JSON.parse(lines[lines.length - 1]) as VOTEDATA;
-
       if (interaction.user.id !== data.userWhoCreateIt) {
         await interaction.reply(
-          `<@${interaction.user.id}> Have to ask who create the event to decrypt!!`
+          `<@${interaction.user.id}> Only the event creator can decrypt the results!`
         );
         return;
       }
 
       if (data.decrypted) {
         await interaction.reply(
-          `<@${interaction.user.id}> The vote is decrypted!!`
+          `<@${interaction.user.id}> The results are already decrypted!`
         );
         return;
       }
 
-      await interaction.message.delete();
+      const decryptedStatics = JSON.parse(
+        decryptText(data.encryptedStatics, STATICS_PASSWORD)
+      ) as DECRYPTED_STATICS;
 
-      await interaction.reply(`So....The result for **${data.eventName}** are
-${toFormattedOptions(
-  data.options,
-  JSON.parse(
-    decryptText(data.encryptedStatics, STATICS_PASSWORD)
-  ) as DECRYPTED_STATICS
-)}
-`);
+      await interaction.message.delete();
+      await interaction.reply(
+        `The results for **${data.eventName}** are:\n${toFormattedOptions(
+          data.options,
+          decryptedStatics
+        )}`
+      );
     }
   }
 });

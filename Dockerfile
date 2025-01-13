@@ -1,10 +1,16 @@
-FROM node:21-alpine
+FROM oven/bun:1.0.0-alpine
 
+# Copy application files
 COPY . /app/
 
+# Set working directory
 WORKDIR /app
 
-RUN npm install
-RUN npm run build
+# Install dependencies
+RUN bun install
 
-CMD ["npm", "run", "start"]
+# Build the project
+RUN bun run build
+
+# Start the application
+CMD ["bun", "run", "start"]
